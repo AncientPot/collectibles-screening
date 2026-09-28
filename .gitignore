@@ -1,0 +1,28 @@
+# 虚拟环境
+.venv/
+
+# 敏感配置
+.env
+
+# IDE
+.idea/
+.vscode/
+
+# harness
+.claude/
+.agents/
+AGENTS.md
+.doc/
+
+# 缓存数据
+__pycache__/
+.pytest_cache/
+
+# 临时数据
+save/
+audio_cache/
+config.json
+collected_audio.wav
+
+# 构建数据
+dist/
