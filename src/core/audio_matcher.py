@@ -1,4 +1,5 @@
 import json
+import os
 import threading
 import time
 import wave
@@ -13,7 +14,6 @@ from fastdtw import fastdtw
 from scipy.signal import butter, sosfiltfilt
 
 from src.core.audio_recorder import AUDIO_NAME, SAVE_DIR
-
 from src.utils.app_paths import DATA_DIR
 
 REFERENCE_DIR = DATA_DIR / "original_ audio"
@@ -35,8 +35,8 @@ EVENT_GAP_SECONDS = 0.15   # 事件间的最小静音间隔，小于它视为同
 EVENT_NOISE_RATIO = 0.25   # 事件峰值低于最响事件的该比例视为噪声瞬态（实测杂音≤6%，真实≥59%）
 SILENCE_RMS = 1e-4         # 整段能量低于此值视为真正的静音（1 LSB≈3e-5，轻录音≥1e-3）
 
-# 基准文件名与 audio_map.json 类别键不一致时的映射
-FILE_ALIASES = {"木制品沉默声": "木质品沉闷声"}
+# 基准文件名与 audio_map.json 类别键不一致时的映射（当前全部同名，留作扩展）
+FILE_ALIASES: dict[str, str] = {}
 
 _PARAMS = {"sr": SAMPLE_RATE, "n_mfcc": N_MFCC, "band": list(BAND), "pipeline": 9}
 _SOS = butter(4, BAND, btype="band", fs=SAMPLE_RATE, output="sos")
@@ -46,10 +46,9 @@ class AudioMatcher:
     """采集音频与基准音效的相似度比对：带通滤波→事件截取→MFCC→CMVN→DTW。
     基准特征按（文件名+修改时间+参数）缓存到磁盘，避免重复计算。"""
 
-    def __init__(self, reference_dir: Path = REFERENCE_DIR, cache_dir: Path = CACHE_DIR,
+    def __init__(self, cache_dir: Path = CACHE_DIR,
                  save_caps: dict[str, int] | None = None,
                  save_weight: float = 0.5):
-        self._reference_dir = Path(reference_dir)
         self._cache_dir = Path(cache_dir)
         self.save_caps: dict[str, int] = dict(save_caps or {})
         self.save_weight = min(1.0, max(0.0, float(save_weight)))
@@ -158,12 +157,17 @@ class AudioMatcher:
         return templates
 
     @staticmethod
-    def _full_span(y: np.ndarray) -> np.ndarray | None:
-        """从首个活跃帧到最后活跃帧的整体跨度"""
+    def _active_mask(y: np.ndarray) -> np.ndarray:
+        """自适应能量门限的活跃帧掩码（中位数 + 2×MAD）"""
         rms = librosa.feature.rms(y=y, frame_length=512, hop_length=256)[0]
         median = np.median(rms)
         threshold = median + 2 * np.median(np.abs(rms - median))
-        active = rms > threshold
+        return rms > threshold
+
+    @staticmethod
+    def _full_span(y: np.ndarray) -> np.ndarray | None:
+        """从首个活跃帧到最后活跃帧的整体跨度"""
+        active = AudioMatcher._active_mask(y)
         if not active.any():
             return None
         i0 = int(np.argmax(active))
@@ -210,11 +214,16 @@ class AudioMatcher:
                 for category, tiers in features.items()
                 for kind, templates in tiers.items()
                 for i, template in enumerate(templates)}
-        np.savez(self._cache_dir / "reference_features.npz", **flat)
+        npz_path = self._cache_dir / "reference_features.npz"
+        # np.savez 会给不以 .npz 结尾的文件名自动追加 .npz，临时文件必须以 .npz 结尾
+        npz_tmp = self._cache_dir / "reference_features.tmp.npz"
+        np.savez(npz_tmp, **flat)
+        os.replace(npz_tmp, npz_path)
         meta = {"params": self._current_params(), "files": stamps}
-        (self._cache_dir / "reference_features.json").write_text(
-            json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        meta_path = self._cache_dir / "reference_features.json"
+        meta_tmp = self._cache_dir / "reference_features.json.tmp"
+        meta_tmp.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(meta_tmp, meta_path)
 
     @staticmethod
     def _load(path: Path) -> np.ndarray:
@@ -236,9 +245,7 @@ class AudioMatcher:
     def _split_events(y: np.ndarray) -> list[np.ndarray]:
         """按静音间隔把采集切分为独立事件（如拿起与放下），过滤过短活跃区"""
         rms = librosa.feature.rms(y=y, frame_length=512, hop_length=256)[0]
-        median = np.median(rms)
-        threshold = median + 2 * np.median(np.abs(rms - median))
-        active = rms > threshold
+        active = AudioMatcher._active_mask(y)
         gap_frames = int(EVENT_GAP_SECONDS * SAMPLE_RATE / 256)
         pad = int(CROP_PAD_SECONDS * SAMPLE_RATE / 256)
         regions: list[tuple[int, int]] = []
@@ -262,7 +269,7 @@ class AudioMatcher:
             s1 = min(len(y), (e + 1 + pad) * 256)
             if s1 - s0 >= SAMPLE_RATE // 10:
                 events.append(y[s0:s1])
-        if not events and rms.max() > SILENCE_RMS:
+        if not events and float(rms.max()) > SILENCE_RMS:
             # 切不出可用事件但整段确有声响（连续型或极短促的声音）：整段作为一个事件
             return [y]
         return events
@@ -273,6 +280,11 @@ class AudioMatcher:
         # 倒谱均值归一化（CMVN），抹平电平与信道染色差异
         mf = (mf - mf.mean(axis=1, keepdims=True)) / (mf.std(axis=1, keepdims=True) + 1e-9)
         return mf.T
+
+
+def templates_exist() -> bool:
+    """保底模板是否已构建（templates 目录内存在 wav）"""
+    return any(TEMPLATES_DIR.glob("*.wav"))
 
 
 def prune_save_dir(caps: dict[str, int]) -> list[str]:
@@ -288,7 +300,10 @@ def prune_save_dir(caps: dict[str, int]) -> list[str]:
         excess = len(paths) - cap
         if excess > 0:
             for path in sorted(paths, key=lambda p: p.stat().st_mtime)[:excess]:
-                path.unlink()
+                try:
+                    path.unlink()
+                except OSError:
+                    continue  # 文件被外部程序占用时跳过，不影响其余清理
                 removed.append(path.name)
     return removed
 
@@ -298,6 +313,16 @@ def rebuild_templates(progress=None) -> list[str]:
     采集期间请保持安静，避免其他程序播放声音。progress(序号, 总数, 类别名) 上报进度。"""
     wavs: list[Path] = sorted(REFERENCE_DIR.glob("*.wav"))
     TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
+    # 清理没有对应基准的孤儿模板，避免幻影类别
+    base_stems = {w.stem for w in wavs}
+    for orphan in TEMPLATES_DIR.glob("*.wav"):
+        if orphan.stem not in base_stems:
+            try:
+                orphan.unlink()
+            except OSError:
+                pass
+    speaker = sc.default_speaker()
+    microphone = sc.get_microphone(id=str(speaker.name), include_loopback=True)
     built = []
     for index, wav in enumerate(wavs, 1):
         category = FILE_ALIASES.get(wav.stem, wav.stem)
@@ -312,21 +337,23 @@ def rebuild_templates(progress=None) -> list[str]:
             data = data * (0.5 / peak)  # 固定归一化响度，与用户播放音量设置无关
         if channels > 1:
             data = data.reshape(-1, channels)
-        microphone = sc.get_microphone(id=str(sc.default_speaker().name), include_loopback=True)
         with microphone.recorder(samplerate=48000, channels=2) as recorder:
 
             def delayed_play():
                 time.sleep(0.3)
-                sc.default_speaker().play(data, samplerate=rate)
+                speaker.play(data, samplerate=rate)
 
             threading.Thread(target=delayed_play, daemon=True).start()
             captured: np.ndarray = recorder.record(numframes=int(48000 * 1.2))
-        with wave.open(str(TEMPLATES_DIR / f"{category}.wav"), "wb") as f:
+        target = TEMPLATES_DIR / f"{category}.wav"
+        temp = TEMPLATES_DIR / f"{category}.tmp"
+        with wave.open(str(temp), "wb") as f:
             f.setnchannels(2)
             f.setsampwidth(2)
             f.setframerate(48000)
             samples: np.ndarray = np.clip(captured, -1.0, 1.0)
             f.writeframes((samples * 32767).astype(np.int16).tobytes())
+        os.replace(temp, target)  # 原子替换，中断不留半截模板
         built.append(category)
         time.sleep(0.4)
     return built

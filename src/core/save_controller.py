@@ -1,23 +1,17 @@
 import hashlib
-import json
 import threading
 import traceback
 
 from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtWidgets import QDialog, QMessageBox
 
-from src.core.audio_matcher import RECORDED_WAV, prune_save_dir
+from src.core.audio_matcher import RECORDED_WAV, USER_SAVE_DIR, prune_save_dir
 from src.widgets.save_dialog import SaveDialog
 from src.widgets.sound_indicator import ANY_SOUND
 
-from src.utils.app_paths import DATA_DIR
-
-SAVE_DIR = DATA_DIR / "save"
-JSON_DIR = DATA_DIR / "json_map"
-
 
 class SaveController(QObject):
-    """保存按钮：把当前采集音频以「音频名称_内容哈希」命名存档，
+    """保存按钮：把当前采集音频按「音频名称_内容哈希」存入类别子目录，
     并在后台热重载匹配器使新学习模板立即生效"""
 
     _reload_done = Signal(bool)
@@ -44,7 +38,7 @@ class SaveController(QObject):
         data = RECORDED_WAV.read_bytes()
         # 内容哈希做后缀：同一段音频重名不会产生重复文件
         digest = hashlib.sha256(data).hexdigest()[:8]
-        category_dir = SAVE_DIR / category_name
+        category_dir = USER_SAVE_DIR / category_name
         category_dir.mkdir(parents=True, exist_ok=True)
         target = category_dir / f"{category_name}_{digest}.wav"
         if target.exists():
@@ -82,11 +76,10 @@ class SaveController(QObject):
         QTimer.singleShot(3000, clear)
 
     def _current_category(self) -> str | None:
-        """当前指示区选中的声音类别（任意声音视为未选择）"""
+        """当前指示区选中的声音类别（任意音频视为未选择）"""
         category = self.top_bar.sound_indicator.current_category
         return category if category != ANY_SOUND else None
 
-    @staticmethod
-    def _load_categories() -> list[str]:
-        with open(JSON_DIR / "audio_map.json", encoding="utf-8") as f:
-            return sorted(json.load(f))
+    def _load_categories(self) -> list[str]:
+        """以匹配器类别为唯一来源，与下拉/筛选保持一致"""
+        return sorted(self._matcher.categories)

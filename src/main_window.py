@@ -26,9 +26,9 @@ class MainWindow(QWidget):
         self.listen_controller = ListenController(self.top_bar)
         self.save_controller = SaveController(self.top_bar, self.listen_controller.matcher)
         self.listen_controller.match_completed.connect(self._on_match_completed)
-        indicator = self.top_bar.sound_indicator
-        indicator.set_categories(self.listen_controller.matcher.categories)
-        indicator.category_combo_box.currentTextChanged.connect(self._on_sound_changed)
+        self.top_bar.sound_indicator.set_categories(self.listen_controller.matcher.categories)
+        # 类别名（最多5字）长于初始占位项，填充后重算统一宽度避免截断
+        self.top_bar.unify_combo_widths()
         self._create_main_layout()
 
     def _on_match_completed(self, category: str, probability: float):
@@ -40,11 +40,6 @@ class MainWindow(QWidget):
             self.top_bar.probability_label.setText("比对失败")
         else:
             self.top_bar.probability_label.setText("未检测到有效声音")
-
-    def _on_sound_changed(self, category: str):
-        """声音类别变化：内容区按所选声音筛选"""
-        sound = None if category == "任意声音" else category
-        self.filter_controller.set_sound(sound)
 
     def _create_main_layout(self):
         """创建主布局"""

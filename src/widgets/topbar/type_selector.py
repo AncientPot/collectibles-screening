@@ -1,6 +1,7 @@
-from PySide6.QtWidgets import QComboBox, QHBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QWidget
 
 from src.utils.set_layout import set_layout
+from src.widgets.topbar.auto_fit import AutoFitComboBox
 
 
 class TypeSelector(QWidget):
@@ -13,7 +14,7 @@ class TypeSelector(QWidget):
     def _setup_ui(self):
         """组装ui"""
         layout = set_layout(QHBoxLayout(self))
-        self.combo_box = QComboBox()
+        self.combo_box = AutoFitComboBox()
         self.combo_box.addItems([
             "神秘货物",
             "建筑材料", "能源物品", "生活物品",

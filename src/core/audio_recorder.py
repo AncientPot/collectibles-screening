@@ -30,8 +30,8 @@ class LoopbackRecorder:
         self._audio_path = self._save_dir / AUDIO_NAME
         self._max_seconds = max_seconds
         self._on_finished = on_finished
-        self._stop_event = threading.Event()
         self._session = 0
+        self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
 
     @property
@@ -49,13 +49,15 @@ class LoopbackRecorder:
         self._max_seconds = value
 
     def start(self):
-        """开始一段录音"""
+        """开始一段录音。每次会话使用独立的停止事件：stop() 超时留下的
+        旧线程持有旧事件（已置位），不会被新会话的 clear() 复活。"""
         if self.recording:
             return
-        self._stop_event.clear()
         self._session += 1
         session = self._session
-        thread = threading.Thread(target=self._record, args=(session,), daemon=True)
+        stop_event = threading.Event()
+        self._stop_event = stop_event
+        thread = threading.Thread(target=self._record, args=(session, stop_event), daemon=True)
         self._thread = thread
         thread.start()
 
@@ -67,13 +69,13 @@ class LoopbackRecorder:
         self._stop_event.set()
         thread.join(timeout=1.0)
 
-    def _record(self, session: int):
+    def _record(self, session: int, stop_event: threading.Event):
         chunks = []
         try:
             deadline = time.monotonic() + self._max_seconds
             microphone = sc.get_microphone(id=str(sc.default_speaker().name), include_loopback=True)
             with microphone.recorder(samplerate=SAMPLE_RATE, channels=CHANNELS) as recorder:
-                while not self._stop_event.is_set() and time.monotonic() < deadline:
+                while not stop_event.is_set() and time.monotonic() < deadline:
                     chunks.append(recorder.record(numframes=2048))
         except Exception:
             # 设备异常时线程也不能无声死亡，否则收尾回调不会执行、按钮状态卡死

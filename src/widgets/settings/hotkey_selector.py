@@ -13,11 +13,14 @@ class HotkeySelector(QWidget):
     避免按下的新键同时触发当前绑定的热键动作。"""
 
     _captured = Signal(str)
+    capture_started = Signal()
+    capture_ended = Signal()
 
     def __init__(self, hotkey: str, parent=None,
                  on_capture_start=None, on_capture_end=None):
         super().__init__(parent)
         self._previous_hotkey = hotkey
+        self._capturing = False
         self._on_capture_start = on_capture_start
         self._on_capture_end = on_capture_end
         self._setup_ui(hotkey)
@@ -37,13 +40,26 @@ class HotkeySelector(QWidget):
     def hotkey(self) -> str:
         return self.hotkey_edit.text()
 
+    @property
+    def is_capturing(self) -> bool:
+        """是否正在等待按键录制。不能用按钮可用性推断：两个录制框互斥
+        时按钮也会被禁用，但并未在录制，cancel 须跳过这种被动禁用。"""
+        return self._capturing
+
+    def cancel(self):
+        """结束未完成的录制并恢复原键显示（对话框关闭/确认时调用）"""
+        if self.is_capturing:
+            self._on_captured("")
+
     def _on_record_clicked(self, *_):
         """开始录制快捷键，等待用户下一次按键；先挂起全局热键"""
         self._previous_hotkey = self.hotkey_edit.text()
+        self._capturing = True
         self.record_button.setEnabled(False)
         self.hotkey_edit.setText("请按键（Esc 取消）...")
         if self._on_capture_start is not None:
             self._on_capture_start()
+        self.capture_started.emit()
         threading.Thread(target=self._capture_hotkey, daemon=True).start()
 
     def _capture_hotkey(self):
@@ -55,7 +71,9 @@ class HotkeySelector(QWidget):
         self._captured.emit(hotkey if hotkey != "esc" else "")
 
     def _on_captured(self, hotkey: str):
+        self._capturing = False
         if self._on_capture_end is not None:
             self._on_capture_end()
+        self.capture_ended.emit()
         self.record_button.setEnabled(True)
         self.hotkey_edit.setText(hotkey if hotkey else self._previous_hotkey)

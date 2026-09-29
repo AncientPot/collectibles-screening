@@ -1,7 +1,9 @@
-from PySide6.QtWidgets import QComboBox, QDialog, QDialogButtonBox, QFormLayout
+from PySide6.QtWidgets import QComboBox, QDialogButtonBox, QFormLayout
+
+from src.widgets.top_aligned_dialog import TopAlignedDialog
 
 
-class SaveDialog(QDialog):
+class SaveDialog(TopAlignedDialog):
     """保存采集音频对话框：选择该音频对应的声音类别名称"""
 
     def __init__(self, parent=None, categories: list[str] | None = None,
@@ -36,19 +38,3 @@ class SaveDialog(QDialog):
     @property
     def category_name(self) -> str:
         return self.category_combo_box.currentText().strip()
-
-    def _setup_geometry(self):
-        """宽度设为主界面一半（不小于表单最小宽度）"""
-        parent = self.parentWidget()
-        window = parent.window() if parent else None
-        if window is not None:
-            self.resize(int(window.width() / 2), self.height())
-
-    def showEvent(self, event):
-        """显示后水平居中于主界面，顶边上移与主界面顶边对齐"""
-        super().showEvent(event)
-        parent = self.parentWidget()
-        window = parent.window() if parent else None
-        if window is not None:
-            center_x = window.geometry().center().x()
-            self.move(center_x - self.width() // 2, window.frameGeometry().top())

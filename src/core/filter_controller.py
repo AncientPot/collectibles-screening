@@ -4,6 +4,7 @@ from PySide6.QtCore import QObject
 from PySide6.QtGui import QColor
 
 from src.utils.app_paths import DATA_DIR
+from src.widgets.sound_indicator import ANY_SOUND
 
 JSON_DIR = DATA_DIR / "json_map"
 
@@ -14,6 +15,8 @@ QUALITY_COLORS = {
 }
 
 QUALITY_ORDER = {"红": 0, "金": 1, "紫": 2}
+UNKNOWN_QUALITY_COLOR = QColor("#888888")
+UNKNOWN_QUALITY_ORDER = 9  # 未知品质排最后
 
 
 class FilterController(QObject):
@@ -45,18 +48,29 @@ class FilterController(QObject):
         """连接顶栏筛选控件的信号"""
         self.top_bar.type_selector.combo_box.currentTextChanged.connect(self.refresh)
         self.top_bar.format_selector.combo_box.currentTextChanged.connect(self.refresh)
+        self.top_bar.sound_indicator.category_combo_box.currentTextChanged.connect(
+            self._on_sound_changed)
+
+    def _on_sound_changed(self, category: str):
+        """信号触发：声音类别变化驱动筛选（任意音频视为不筛）"""
+        self.set_sound(None if category == ANY_SOUND else category)
 
     def refresh(self, *_):
         """信号触发：按当前类别与格式筛选物品并刷新内容区，红品质在前、金其次、紫最后"""
         names = sorted(
             self._filtered_names(),
-            key=lambda name: QUALITY_ORDER[self._collection_map[name]["品质"]],
+            key=lambda name: QUALITY_ORDER.get(
+                self._quality_of(name), UNKNOWN_QUALITY_ORDER),
         )
         items = [
-            (name, QUALITY_COLORS[self._collection_map[name]["品质"]])
+            (name, QUALITY_COLORS.get(self._quality_of(name), UNKNOWN_QUALITY_COLOR))
             for name in names
         ]
         self.content_area.show_items(items)
+
+    def _quality_of(self, name: str) -> str | None:
+        """物品品质；映射数据缺项时返回 None，排序与着色按未知品质处理"""
+        return self._collection_map.get(name, {}).get("品质")
 
     def _filtered_names(self):
         """类别、格式与声音三重筛选取交集；均未选择时返回全部物品"""

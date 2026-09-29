@@ -13,21 +13,24 @@ from src.core.audio_matcher import (
     FILE_ALIASES,
     RECORDED_WAV,
     REFERENCE_DIR,
+    USER_SAVE_DIR,
     AudioMatcher,
     prune_save_dir,
     rebuild_templates,
+    templates_exist,
 )
 from src.core.audio_recorder import LoopbackRecorder
+from src.utils.app_paths import DATA_DIR
 from src.widgets.settings.settings_dialog import SettingsDialog
 from src.widgets.sound_indicator import ANY_SOUND
-
-from src.utils.app_paths import DATA_DIR
 
 CONFIG_PATH = DATA_DIR / "config.json"
 _CONFIG_DEFAULTS = {
     "max_seconds": 5, "hotkey": "num +", "visibility_hotkey": "-", "play_volume": 5.0,
     "save_caps": {}, "save_weight": 0.5,
 }
+# 保底模板未构建时的门禁提示（多处引用，改动须同步）
+GATE_MESSAGE = "请进入设置界面构建输出模板"
 
 # 类别名 -> 基准文件名（大多数同名，个别有别名）
 _FILE_OF_CATEGORY = {category: stem for stem, category in FILE_ALIASES.items()}
@@ -55,6 +58,9 @@ class ListenController(QObject):
             save_caps={str(k): int(v) for k, v in config["save_caps"].items()},
             save_weight=float(config["save_weight"]),
         )
+        # 预建全部类别的学习目录，保证 save 目录结构完整可预期
+        for category in self.matcher.categories:
+            (USER_SAVE_DIR / category).mkdir(parents=True, exist_ok=True)
         self.top_bar.listen_button.button.toggled.connect(self._on_toggled)
         self.top_bar.settings_button.button.clicked.connect(self._on_settings_clicked)
         self.top_bar.play_button.button.clicked.connect(self._on_play_clicked)
@@ -62,8 +68,10 @@ class ListenController(QObject):
         self._record_finished.connect(self._on_record_finished)
         self._match_busy.connect(self._on_match_busy)
         self._visibility_requested.connect(self._toggle_visibility)
+        self._rebuild_finished.connect(self._on_rebuild_done)
         # 启动时窗口位于前台，首次按置顶键先沉到后台
         self._front = True
+        self._rebuilding = False
         # 播放音量倍率：1.0 为不做处理播放原始音频
         self.play_volume = float(config["play_volume"])
         # 'num +' 仅映射小键盘加号；keyboard 的回调在其钩子线程，经信号转回主线程
@@ -73,32 +81,11 @@ class ListenController(QObject):
         self._visibility_remover = lambda: None
         self._hotkeys_active = False
         self._resume_hotkeys()
-
-    def _suspend_hotkeys(self):
-        """录制新快捷键期间挂起全局热键，避免按下的键触发当前热键动作；幂等"""
-        if not self._hotkeys_active:
-            return
-        self._hotkeys_active = False
-        self._hotkey_remover()
-        self._visibility_remover()
-        self._hotkey_remover = lambda: None
-        self._visibility_remover = lambda: None
-
-    def _resume_hotkeys(self):
-        """录制结束后恢复全局热键；幂等（防止两个录制框交叉时重复注册）。
-        单个热键注册失败只告警，不影响另一个与启动流程。"""
-        if self._hotkeys_active:
-            return
-        self._hotkeys_active = True
-        try:
-            self._hotkey_remover = self._register_hotkey(self._hotkey, self._toggle_requested)
-        except (ValueError, TypeError) as exc:
-            print("[热键] 无法注册 %r: %s" % (self._hotkey, exc))
-        try:
-            self._visibility_remover = self._register_hotkey(
-                self._visibility_hotkey, self._visibility_requested)
-        except (ValueError, TypeError) as exc:
-            print("[热键] 无法注册 %r: %s" % (self._visibility_hotkey, exc))
+        # 保底模板未构建时禁用监听并提示，构建完成后自动放开
+        self._templates_gate = not templates_exist()
+        if self._templates_gate:
+            self.top_bar.listen_button.button.setEnabled(False)
+            self.top_bar.probability_label.setText(GATE_MESSAGE)
 
     @property
     def hotkey(self) -> str:
@@ -168,6 +155,34 @@ class ListenController(QObject):
 
         return on_event
 
+    def _suspend_hotkeys(self):
+        """录制新快捷键期间挂起全局热键，避免按下的键触发当前热键动作；幂等"""
+        if not self._hotkeys_active:
+            return
+        self._hotkeys_active = False
+        self._hotkey_remover()
+        self._visibility_remover()
+        self._hotkey_remover = lambda: None
+        self._visibility_remover = lambda: None
+
+    def _resume_hotkeys(self):
+        """录制结束后恢复全局热键；幂等（防止两个录制框交叉时重复注册）。
+        先注销现存钩子再注册，避免挂起期间被覆盖的钩子泄漏成双。"""
+        if self._hotkeys_active:
+            return
+        self._hotkeys_active = True
+        self._hotkey_remover()
+        self._visibility_remover()
+        try:
+            self._hotkey_remover = self._register_hotkey(self._hotkey, self._toggle_requested)
+        except (ValueError, TypeError) as exc:
+            print("[热键] 无法注册 %r: %s" % (self._hotkey, exc))
+        try:
+            self._visibility_remover = self._register_hotkey(
+                self._visibility_hotkey, self._visibility_requested)
+        except (ValueError, TypeError) as exc:
+            print("[热键] 无法注册 %r: %s" % (self._visibility_hotkey, exc))
+
     def _toggle_recording(self):
         """主线程中切换监听按钮，走完整的启停流程；比对期间忽略热键"""
         button = self.top_bar.listen_button.button
@@ -199,8 +214,8 @@ class ListenController(QObject):
         self._match_busy.emit(False)
 
     def _on_match_busy(self, busy: bool):
-        """比对期间禁止监听"""
-        self.top_bar.listen_button.button.setEnabled(not busy)
+        """比对期间禁止监听（模板门禁未解除时保持禁用）"""
+        self.top_bar.listen_button.button.setEnabled(not busy and not self._templates_gate)
 
     def _on_toggled(self, checked: bool):
         """信号触发：切换按钮显示并开始/停止录音"""
@@ -248,10 +263,19 @@ class ListenController(QObject):
             on_save_files_changed=self._reload_matcher_async,
             suspend_hotkeys=self._suspend_hotkeys,
             resume_hotkeys=self._resume_hotkeys,
+            templates_ready=not self._templates_gate,
         )
         dialog.rebuild_button.clicked.connect(lambda _, d=dialog: self._start_rebuild(d))
         self._rebuild_progress.connect(dialog.on_rebuild_progress)
         self._rebuild_finished.connect(dialog.on_rebuild_finished)
+
+        def discard_dialog():
+            # 对话框关闭即断开信号并销毁，避免隐藏实例与连接随打开次数累积
+            self._rebuild_progress.disconnect(dialog.on_rebuild_progress)
+            self._rebuild_finished.disconnect(dialog.on_rebuild_finished)
+            dialog.deleteLater()
+
+        dialog.finished.connect(discard_dialog)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.recorder.max_seconds = dialog.max_seconds
             self.play_volume = dialog.play_volume
@@ -263,43 +287,72 @@ class ListenController(QObject):
             removed = prune_save_dir(dialog.save_caps)
             if removed:
                 print("[学习] 已删除超限最旧音频: %s" % ", ".join(removed))
-            threading.Thread(target=self.matcher.reload, daemon=True).start()
+            self._reload_matcher_async()
             self._save_config()
 
     def _reload_matcher_async(self):
-        """后台重建匹配器特征（学习音频增删后调用）"""
-        threading.Thread(target=self.matcher.reload, daemon=True).start()
+        """后台重建匹配器特征（学习音频增删/设置变更后调用）"""
+
+        def run():
+            try:
+                self.matcher.reload()
+            except Exception:
+                traceback.print_exc()
+
+        threading.Thread(target=run, daemon=True).start()
 
     def _start_rebuild(self, dialog):
-        """开始重建保底模板：按钮变红显示重建中，后台采集播放"""
-        dialog.rebuild_button.setEnabled(False)
-        dialog.rebuild_button.setText("正在重建中")
-        dialog.rebuild_button.setStyleSheet("color: #DC143C;")
+        """开始构建输出模板：重入直接忽略；构建期间禁用监听防止录入播放声"""
+        if self._rebuilding:
+            return
+        self._rebuilding = True
+        self.top_bar.listen_button.button.setEnabled(False)
+        dialog.set_building(True)
         dialog.rebuild_status_label.setText("准备采集，请保持安静...")
         threading.Thread(target=self._run_rebuild, daemon=True).start()
 
     def _run_rebuild(self):
-        """后台重建保底模板并热重载匹配器；结果经信号回主线程"""
+        """后台构建输出模板；无论成败都重载已写出的模板，结果经信号回主线程"""
         try:
             rebuild_templates(
                 progress=lambda done, total, category:
                     self._rebuild_progress.emit(done, total, category)
             )
-            self.matcher.reload()
             ok = True
         except Exception:
             traceback.print_exc()
             ok = False
+        try:
+            self.matcher.reload()
+        except Exception:
+            traceback.print_exc()
+            ok = False
+        self._rebuilding = False
         self._rebuild_finished.emit(ok)
+
+    def _on_rebuild_done(self, ok: bool):
+        """输出模板构建结束：模板已就位即解除监听门禁（半途失败也按现状判断）"""
+        if self._templates_gate and templates_exist():
+            self._templates_gate = False
+            label = self.top_bar.probability_label
+            if label.text() == GATE_MESSAGE:
+                label.setText("")
+        if not self._templates_gate:
+            self.top_bar.listen_button.button.setEnabled(True)
 
     @staticmethod
     def _load_config() -> dict:
-        """读取持久化设置；文件缺失或损坏时回退默认值"""
+        """读取持久化设置；文件缺失或损坏时回退默认值（深拷贝，嵌套 dict 不共享）"""
         try:
             stored = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
         except (OSError, ValueError):
-            return dict(_CONFIG_DEFAULTS)
-        return {key: stored.get(key, default) for key, default in _CONFIG_DEFAULTS.items()}
+            stored = {}
+        config = dict(_CONFIG_DEFAULTS)
+        config["save_caps"] = dict(config["save_caps"])
+        for key, default in _CONFIG_DEFAULTS.items():
+            if key in stored:
+                config[key] = stored[key]
+        return config
 
     def _save_config(self):
         config = {
