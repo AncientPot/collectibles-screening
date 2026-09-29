@@ -14,16 +14,20 @@ from src.core.audio_matcher import (
     RECORDED_WAV,
     REFERENCE_DIR,
     AudioMatcher,
+    prune_save_dir,
     rebuild_templates,
 )
 from src.core.audio_recorder import LoopbackRecorder
-from src.widgets.settings_dialog import SettingsDialog
+from src.widgets.settings.settings_dialog import SettingsDialog
 from src.widgets.sound_indicator import ANY_SOUND
 
 from src.utils.app_paths import DATA_DIR
 
 CONFIG_PATH = DATA_DIR / "config.json"
-_CONFIG_DEFAULTS = {"max_seconds": 5, "hotkey": "num +", "visibility_hotkey": "-", "play_volume": 5.0}
+_CONFIG_DEFAULTS = {
+    "max_seconds": 5, "hotkey": "num +", "visibility_hotkey": "-", "play_volume": 5.0,
+    "save_caps": {}, "save_weight": 0.5,
+}
 
 # 类别名 -> 基准文件名（大多数同名，个别有别名）
 _FILE_OF_CATEGORY = {category: stem for stem, category in FILE_ALIASES.items()}
@@ -47,7 +51,10 @@ class ListenController(QObject):
         self.recorder = LoopbackRecorder(
             max_seconds=int(config["max_seconds"]), on_finished=self._record_finished.emit
         )
-        self.matcher = AudioMatcher()
+        self.matcher = AudioMatcher(
+            save_caps={str(k): int(v) for k, v in config["save_caps"].items()},
+            save_weight=float(config["save_weight"]),
+        )
         self.top_bar.listen_button.button.toggled.connect(self._on_toggled)
         self.top_bar.settings_button.button.clicked.connect(self._on_settings_clicked)
         self.top_bar.play_button.button.clicked.connect(self._on_play_clicked)
@@ -64,8 +71,34 @@ class ListenController(QObject):
         self._visibility_hotkey = str(config["visibility_hotkey"])
         self._hotkey_remover = lambda: None
         self._visibility_remover = lambda: None
-        self.set_hotkey(self._hotkey)
-        self.set_visibility_hotkey(self._visibility_hotkey)
+        self._hotkeys_active = False
+        self._resume_hotkeys()
+
+    def _suspend_hotkeys(self):
+        """录制新快捷键期间挂起全局热键，避免按下的键触发当前热键动作；幂等"""
+        if not self._hotkeys_active:
+            return
+        self._hotkeys_active = False
+        self._hotkey_remover()
+        self._visibility_remover()
+        self._hotkey_remover = lambda: None
+        self._visibility_remover = lambda: None
+
+    def _resume_hotkeys(self):
+        """录制结束后恢复全局热键；幂等（防止两个录制框交叉时重复注册）。
+        单个热键注册失败只告警，不影响另一个与启动流程。"""
+        if self._hotkeys_active:
+            return
+        self._hotkeys_active = True
+        try:
+            self._hotkey_remover = self._register_hotkey(self._hotkey, self._toggle_requested)
+        except (ValueError, TypeError) as exc:
+            print("[热键] 无法注册 %r: %s" % (self._hotkey, exc))
+        try:
+            self._visibility_remover = self._register_hotkey(
+                self._visibility_hotkey, self._visibility_requested)
+        except (ValueError, TypeError) as exc:
+            print("[热键] 无法注册 %r: %s" % (self._visibility_hotkey, exc))
 
     @property
     def hotkey(self) -> str:
@@ -76,16 +109,26 @@ class ListenController(QObject):
         return self._visibility_hotkey
 
     def set_hotkey(self, key: str):
-        """更换监听热键"""
+        """更换监听热键；先注册成功再切换，无法解析的键名保持原热键"""
+        try:
+            remover = self._register_hotkey(key, self._toggle_requested)
+        except (ValueError, TypeError) as exc:
+            print("[热键] 无法注册 %r: %s" % (key, exc))
+            return
         self._hotkey_remover()
         self._hotkey = key
-        self._hotkey_remover = self._register_hotkey(key, self._toggle_requested)
+        self._hotkey_remover = remover
 
     def set_visibility_hotkey(self, key: str):
-        """更换置顶切换热键"""
+        """更换置顶切换热键；先注册成功再切换，无法解析的键名保持原热键"""
+        try:
+            remover = self._register_hotkey(key, self._visibility_requested)
+        except (ValueError, TypeError) as exc:
+            print("[热键] 无法注册 %r: %s" % (key, exc))
+            return
         self._visibility_remover()
         self._visibility_hotkey = key
-        self._visibility_remover = self._register_hotkey(key, self._visibility_requested)
+        self._visibility_remover = remover
 
     @staticmethod
     def _register_hotkey(key: str, signal):
@@ -199,6 +242,12 @@ class ListenController(QObject):
             hotkey=self.hotkey,
             visibility_hotkey=self.visibility_hotkey,
             play_volume=self.play_volume,
+            save_weight=self.matcher.save_weight,
+            categories=self.matcher.categories,
+            save_caps=self.matcher.save_caps,
+            on_save_files_changed=self._reload_matcher_async,
+            suspend_hotkeys=self._suspend_hotkeys,
+            resume_hotkeys=self._resume_hotkeys,
         )
         dialog.rebuild_button.clicked.connect(lambda _, d=dialog: self._start_rebuild(d))
         self._rebuild_progress.connect(dialog.on_rebuild_progress)
@@ -208,11 +257,24 @@ class ListenController(QObject):
             self.play_volume = dialog.play_volume
             self.set_hotkey(dialog.hotkey)
             self.set_visibility_hotkey(dialog.visibility_hotkey)
+            self.matcher.save_weight = dialog.save_weight
+            self.matcher.save_caps = dialog.save_caps
+            # 上限调整后清理超出上限的最旧学习音频，并后台重建特征
+            removed = prune_save_dir(dialog.save_caps)
+            if removed:
+                print("[学习] 已删除超限最旧音频: %s" % ", ".join(removed))
+            threading.Thread(target=self.matcher.reload, daemon=True).start()
             self._save_config()
 
+    def _reload_matcher_async(self):
+        """后台重建匹配器特征（学习音频增删后调用）"""
+        threading.Thread(target=self.matcher.reload, daemon=True).start()
+
     def _start_rebuild(self, dialog):
-        """开始重建保底模板：按钮禁用，后台采集播放"""
+        """开始重建保底模板：按钮变红显示重建中，后台采集播放"""
         dialog.rebuild_button.setEnabled(False)
+        dialog.rebuild_button.setText("正在重建中")
+        dialog.rebuild_button.setStyleSheet("color: #DC143C;")
         dialog.rebuild_status_label.setText("准备采集，请保持安静...")
         threading.Thread(target=self._run_rebuild, daemon=True).start()
 
@@ -245,6 +307,8 @@ class ListenController(QObject):
             "hotkey": self.hotkey,
             "visibility_hotkey": self.visibility_hotkey,
             "play_volume": self.play_volume,
+            "save_caps": self.matcher.save_caps,
+            "save_weight": self.matcher.save_weight,
         }
         CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
         CONFIG_PATH.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")

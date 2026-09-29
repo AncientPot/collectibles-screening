@@ -56,7 +56,7 @@ class MainWindow(QWidget):
         """设置窗口位置和大小"""
         size = QApplication.primaryScreen().size()
         w, h = int(6 * size.width() / 13), int(size.height() / 6)
-        self.setGeometry(int(size.width() / 4), 0, w, h)
+        self.setGeometry(0, 0, w, h)
         self.setFixedSize(w, h)
 
     def is_topmost(self) -> bool:

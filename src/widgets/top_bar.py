@@ -1,12 +1,12 @@
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QWidget
 
 from src.utils.set_layout import set_layout
-from src.widgets.button.format_selector import FormatSelector
-from src.widgets.button.listen_button import ListenButton
-from src.widgets.button.play_button import PlayButton
-from src.widgets.button.save_button import SaveButton
-from src.widgets.button.settings_button import SettingsButton
-from src.widgets.button.type_selector import TypeSelector
+from src.widgets.topbar.format_selector import FormatSelector
+from src.widgets.topbar.listen_button import ListenButton
+from src.widgets.topbar.play_button import PlayButton
+from src.widgets.topbar.save_button import SaveButton
+from src.widgets.topbar.settings_button import SettingsButton
+from src.widgets.topbar.type_selector import TypeSelector
 from src.widgets.sound_indicator import SoundIndicator
 
 

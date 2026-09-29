@@ -6,7 +6,7 @@ import traceback
 from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtWidgets import QDialog, QMessageBox
 
-from src.core.audio_matcher import RECORDED_WAV
+from src.core.audio_matcher import RECORDED_WAV, prune_save_dir
 from src.widgets.save_dialog import SaveDialog
 from src.widgets.sound_indicator import ANY_SOUND
 
@@ -44,13 +44,18 @@ class SaveController(QObject):
         data = RECORDED_WAV.read_bytes()
         # 内容哈希做后缀：同一段音频重名不会产生重复文件
         digest = hashlib.sha256(data).hexdigest()[:8]
-        SAVE_DIR.mkdir(parents=True, exist_ok=True)
-        target = SAVE_DIR / f"{category_name}_{digest}.wav"
+        category_dir = SAVE_DIR / category_name
+        category_dir.mkdir(parents=True, exist_ok=True)
+        target = category_dir / f"{category_name}_{digest}.wav"
         if target.exists():
             QMessageBox.information(self.top_bar, "保存", "该音频已保存过：%s" % target.name)
             return
         target.write_bytes(data)
-        QMessageBox.information(self.top_bar, "保存", "已保存：%s" % target.name)
+        removed = prune_save_dir(self._matcher.save_caps)
+        message = "已保存：%s" % target.name
+        if removed:
+            message += "（超限已删最旧 %d 个）" % len(removed)
+        QMessageBox.information(self.top_bar, "保存", message)
         # 后台热重载，新学习模板约两秒内生效，无需重启应用
         threading.Thread(target=self._reload_and_notify, daemon=True).start()
 

@@ -1,3 +1,4 @@
+import os
 import threading
 import time
 import traceback
@@ -88,8 +89,11 @@ class LoopbackRecorder:
     def _save(self, data: np.ndarray):
         self._save_dir.mkdir(parents=True, exist_ok=True)
         pcm = (np.clip(data, -1.0, 1.0) * 32767).astype(np.int16)
-        with wave.open(str(self._audio_path), "wb") as f:
+        # 先写临时文件再原子替换，避免保存/比对读侧读到写了一半的音频
+        temp_path = self._audio_path.with_suffix(".tmp")
+        with wave.open(str(temp_path), "wb") as f:
             f.setnchannels(data.shape[1])
             f.setsampwidth(2)
             f.setframerate(SAMPLE_RATE)
             f.writeframes(pcm.tobytes())
+        os.replace(temp_path, self._audio_path)
