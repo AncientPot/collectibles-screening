@@ -1,0 +1,37 @@
+# 虚拟环境
+.venv/
+
+# 敏感配置
+.env
+
+# IDE配置
+.idea/
+.vscode/
+
+# harness配置
+.claude/
+.agents/
+.cursor/
+.copilot/
+.codex/
+.zcode/
+.dsh/
+.gemini/
+AGENTS.md
+.zcodeignore
+
+# 缓存数据
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# 文档数据
+doc/
+
+# 备份数据
+__backup__/
+
+# 构建数据
+dist/
+build/
