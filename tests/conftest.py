@@ -23,8 +23,8 @@ def _isolated_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 def qapp() -> QApplication:
     """提供整个测试会话共用的离屏 QApplication。"""
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    app = QApplication.instance()
-    return app if isinstance(app, QApplication) else QApplication([])
+    instance = QApplication.instance()
+    return instance if isinstance(instance, QApplication) else QApplication([])
 
 
 @pytest.fixture

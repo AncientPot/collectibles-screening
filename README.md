@@ -46,12 +46,3 @@ python main.py    # 不在虚拟环境时自动转入项目 .venv 启动
 **删除**:反向操作,四处同步移除该物品名。
 
 也可以直接在设置界面用"添加/删除"按钮,程序会自动改这四个文件。
-
-## 打包
-
-```bash
-uv run pyinstaller --noconfirm --clean --onefile --name 听声鉴宝 main.py
-cp -r data dist/data
-```
-
-`dist/听声鉴宝.exe` 连同 `dist/data` 一起分发即可。

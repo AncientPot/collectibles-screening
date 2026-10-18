@@ -34,6 +34,8 @@ class ButtonBar(QFrame):
     filter_changed = Signal(str, str, str)
     # 热键按下,请求主窗口切换置顶/置底
     toggle_topmost = Signal()
+    # 播放状态变化,True 表示正在播放
+    playing_changed = Signal(bool)
 
     def __init__(self, store: DataStore, config: AppConfig | None = None) -> None:
         """初始化工具栏控件并连接信号。
@@ -49,9 +51,12 @@ class ButtonBar(QFrame):
         self.category_combo = QComboBox()
         self.format_combo = QComboBox()
         self.sound_combo = QComboBox()
+        self.play_button = QPushButton("播放")
         self.settings_button = QPushButton("设置")
         self.sound_effect = QSoundEffect()
         self.sound_effect.setVolume(self._config.volume)
+        # 播放开始/结束/被打断均会触发(信号无参),转发实际播放状态
+        self.sound_effect.playingChanged.connect(self._on_playing_changed)
         self.hotkey_manager = HotkeyManager()
         self._hotkey_actions = {
             ACTION_PLAY: self.play_sound,
@@ -80,7 +85,16 @@ class ButtonBar(QFrame):
             HOTKEY_LABELS,
             parent=self,
         )
-        # 拦截输入控件自身的上下方向键处理,方向键仅保留全局热键切换声音一条路径
+        # 拦截全部按钮上的方向键:焦点切换不受快捷键影响
+        for button in (
+            self.play_button,
+            self.settings_button,
+            *self.settings_dialog.hotkey_buttons.values(),
+            self.settings_dialog.add_button,
+            self.settings_dialog.remove_button,
+        ):
+            button.installEventFilter(self)
+        # 拦截输入控件自身的方向键处理,方向键仅保留全局热键一条路径
         for widget in (
             self.category_combo,
             self.format_combo,
@@ -134,6 +148,7 @@ class ButtonBar(QFrame):
         layout.addWidget(self.category_combo)
         layout.addWidget(self.format_combo)
         layout.addWidget(self.sound_combo)
+        layout.addWidget(self.play_button)
         layout.addWidget(self.settings_button)
         layout.addStretch()
 
@@ -142,6 +157,7 @@ class ButtonBar(QFrame):
         self.category_combo.currentTextChanged.connect(self.emit_filter_changed)
         self.format_combo.currentTextChanged.connect(self.emit_filter_changed)
         self.sound_combo.currentTextChanged.connect(self.emit_filter_changed)
+        self.play_button.clicked.connect(self.play_sound)
         self.settings_button.clicked.connect(self.open_settings)
         self.settings_dialog.volume_spin.valueChanged.connect(self.set_volume)
         self.hotkey_manager.hotkey_pressed.connect(self.trigger_hotkey)
@@ -170,13 +186,22 @@ class ButtonBar(QFrame):
 
     @Slot()
     def play_sound(self) -> None:
-        """播放声音下拉列表中选中的声音,音量取设置界面输入框数值;声音为全部时不播放。"""
+        """播放声音下拉列表中选中的声音,音量取设置界面输入框数值;声音为全部时不播放。
+
+        播放前先停止当前输出:上一个声音未播完时立即打断,立即播放新声音。
+        """
         _, _, sound = self.current_filter()
         path = self._store.sound_file(sound)
         if path is None:
             return
+        self.sound_effect.stop()
         self.sound_effect.setSource(QUrl.fromLocalFile(str(path)))
         self.sound_effect.play()
+
+    @Slot()
+    def _on_playing_changed(self) -> None:
+        """播放属性变化通知(信号不带参数),转发当前实际播放状态。"""
+        self.playing_changed.emit(self.sound_effect.isPlaying())
 
     @Slot(float)
     def set_volume(self, value: float) -> None:
@@ -202,36 +227,35 @@ class ButtonBar(QFrame):
 
     @Slot()
     def switch_sound_up(self) -> None:
-        """切换到上一个声音选项。"""
+        """切换到上一个声音选项,已在最上方时保持不变。"""
         self._switch_sound(-1)
 
     @Slot()
     def switch_sound_down(self) -> None:
-        """切换到下一个声音选项。"""
+        """切换到下一个声音选项,已在最下方时保持不变。"""
         self._switch_sound(1)
 
     def _switch_sound(self, step: int) -> None:
-        """按步数切换声音下拉选项,循环滚动并跳过分组标题。
+        """按步数切换声音下拉选项,到边界后停在原地,并跳过分组标题。
 
         Args:
             step: 正数为下一个,负数为上一个。
         """
         combo = self.sound_combo
-        if combo.count() == 0:
-            return
-        index = combo.currentIndex()
-        for _ in range(combo.count()):
-            index = (index + step) % combo.count()
+        candidate = combo.currentIndex()
+        while 0 <= candidate + step < combo.count():
+            candidate += step
             # 分组标题不携带数据,跳过
-            if combo.itemData(index) is not None:
-                break
-        combo.setCurrentIndex(index)
+            if combo.itemData(candidate) is not None:
+                combo.setCurrentIndex(candidate)
+                return
 
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:
-        """拦截输入控件上的上下方向键,方向键仅保留全局热键切换声音一条路径。
+        """拦截控件上的四个方向键,方向键仅保留全局热键一条路径。
 
-        类别、格式、声音下拉与音量框持有焦点时,Qt 默认会用上下方向键
-        改变自身取值;此处将其屏蔽。下拉列表展开时的方向键导航不受影响。
+        四个方向键即全部全局热键;按钮、下拉、音量框持有焦点时,
+        屏蔽方向键以避免移动焦点或改变取值。
+        下拉列表展开时的方向键导航不受影响。
 
         Args:
             obj: 安装了本过滤器的控件。
@@ -243,7 +267,7 @@ class ButtonBar(QFrame):
         if (
             event.type() == QEvent.Type.KeyPress
             and isinstance(event, QKeyEvent)
-            and event.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down)
+            and event.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down, Qt.Key.Key_Left, Qt.Key.Key_Right)
         ):
             combo = obj if isinstance(obj, QComboBox) else None
             if combo is None or not combo.view().isVisible():

@@ -82,12 +82,17 @@ class FlowLayout(QLayout):
         """最小尺寸:最大子项最小尺寸加两倍间距。"""
         size = QSize()
         for item in self.item_list:
-            size = size.expandedTo(item.minimumSize())
+            widget = item.widget()
+            hint = widget.minimumSizeHint() if widget is not None else item.minimumSize()
+            size = size.expandedTo(hint)
         size += QSize(2 * self.spacing(), 2 * self.spacing())
         return size
 
     def _do_layout(self, rect: QRect, test_only: bool) -> int:
         """从左到右排布子项,宽度不够时换行。
+
+        尺寸取控件自身的 sizeHint:新建尚未显示的控件,其布局项的
+        sizeHint 为 (0,0),会导致高度计算与自适应偏小。
 
         Args:
             rect: 可用区域。
@@ -100,7 +105,8 @@ class FlowLayout(QLayout):
         x, y = rect.x(), rect.y()
         line_height = 0
         for item in self.item_list:
-            hint = item.sizeHint()
+            widget = item.widget()
+            hint = widget.sizeHint() if widget is not None else item.sizeHint()
             next_x = x + hint.width() + spacing
             if next_x - spacing > rect.right() and line_height > 0:
                 x = rect.x()

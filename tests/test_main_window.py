@@ -20,6 +20,18 @@ def test_main_window_assembly(qapp: QApplication, fake_keyboard: dict[str, Any])
     assert window.content_area.topmost_label.text() == "置顶:是"
 
 
+def test_play_state_wired_to_content_area(
+    qapp: QApplication, fake_keyboard: dict[str, Any]
+) -> None:
+    """播放状态信号联动内容区标签。"""
+    window = MainWindow()
+    assert window.content_area.play_state_label.text() == "等待播放"
+    window.top_bar.playing_changed.emit(True)
+    assert window.content_area.play_state_label.text() == "播放中"
+    window.top_bar.playing_changed.emit(False)
+    assert window.content_area.play_state_label.text() == "等待播放"
+
+
 def test_data_hot_reload_wiring(qapp: QApplication, fake_keyboard: dict[str, Any]) -> None:
     """数据变动经防抖定时器触发热加载;数据未变时重载亦不报错。"""
     window = MainWindow()

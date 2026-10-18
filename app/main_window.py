@@ -102,6 +102,7 @@ class MainWindow(QWidget):
         """连接工具栏信号。"""
         self.top_bar.filter_changed.connect(self.content_area.refresh)
         self.top_bar.toggle_topmost.connect(self._toggle_topmost)
+        self.top_bar.playing_changed.connect(self.content_area.set_playing)
 
     def showEvent(self, event: QShowEvent) -> None:
         """显示时按当前物品数量自适应窗口高度。

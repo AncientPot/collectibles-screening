@@ -30,6 +30,7 @@ class ContentArea(QFrame):
         self.count_label = QLabel()
         self.topmost_label = QLabel("置顶:否")
         self.hint_label = QLabel("仅包含紫色品质以上常见容易混淆的物品")
+        self.play_state_label = QLabel("等待播放")
         self.scroll_area = QScrollArea()
         self.name_container = QWidget()
         self.flow_layout = FlowLayout(spacing=8)
@@ -50,6 +51,7 @@ class ContentArea(QFrame):
         """
         self.hint_label.setStyleSheet("color: gray;")
         self.topmost_label.setStyleSheet("color: gray;")
+        self.play_state_label.setStyleSheet("color: gray;")
         self.name_container.setLayout(self.flow_layout)
         self.scroll_area.setWidget(self.name_container)
         self.scroll_area.setWidgetResizable(True)
@@ -64,6 +66,7 @@ class ContentArea(QFrame):
         top_row.addWidget(self.count_label)
         top_row.addWidget(self.topmost_label)
         top_row.addWidget(self.hint_label)
+        top_row.addWidget(self.play_state_label)
         top_row.addStretch()
         layout.addLayout(top_row)
         layout.addWidget(self.scroll_area, 1)
@@ -137,6 +140,15 @@ class ContentArea(QFrame):
             topmost: 是否处于窗口置顶状态。
         """
         self.topmost_label.setText("置顶:是" if topmost else "置顶:否")
+
+    @Slot(bool)
+    def set_playing(self, playing: bool) -> None:
+        """更新播放状态显示。
+
+        Args:
+            playing: 是否正在播放音频。
+        """
+        self.play_state_label.setText("播放中" if playing else "等待播放")
 
     def _clear_names(self) -> None:
         """清空已显示的名称标签。"""

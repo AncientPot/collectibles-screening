@@ -80,6 +80,17 @@ class TestButtonBar:
         assert bar.sound_effect.volume() == 0.5
         assert AppConfig().volume == 0.5
 
+    def test_rapid_switch_then_play_uses_latest_sound(
+        self, qapp: QApplication, store: DataStore, fake_keyboard: dict[str, Any]
+    ) -> None:
+        """快速切换声音后立即播放,取到的是最新选中的声音。"""
+        bar = ButtonBar(store)
+        bar.switch_sound_down()
+        bar.switch_sound_down()  # 甲声 -> 乙拿放声
+        bar.play_sound()
+        url = bar.sound_effect.source().toLocalFile()
+        assert url.endswith("乙拿放声_0.wav")
+
     def test_play_without_sound_is_noop(
         self, qapp: QApplication, store: DataStore, fake_keyboard: dict[str, Any]
     ) -> None:
@@ -111,10 +122,10 @@ class TestButtonBar:
         assert "── 暂无声音 ──" not in texts  # 无素材声音已不存在,分组标题消失
         assert bar.category_combo.currentText() == "工具"  # 有效选择保留
 
-    def test_sound_switch_wraps(
+    def test_sound_switch_stops_at_boundaries(
         self, qapp: QApplication, store: DataStore, fake_keyboard: dict[str, Any]
     ) -> None:
-        """切换方法循环滚动声音选项,跳过分组标题,并联动筛选条件。"""
+        """切换声音选项跳过分组标题,到顶/到底后停在边界不循环。"""
         bar = ButtonBar(store)
         total = bar.sound_combo.count()
         assert total == 6  # 全部 + 甲声 + 无红标题 + 乙拿放声 + 暂无声音标题 + 丙声
@@ -127,13 +138,18 @@ class TestButtonBar:
         bar.switch_sound_up()
         assert bar.sound_combo.currentIndex() == 0
         assert received[-1] == ("", "", "")
-        # 循环滚动:从第一项向上到最后一项(跳过分组标题)
+        # 已在最上方,再向上保持不变
         bar.switch_sound_up()
+        assert bar.sound_combo.currentIndex() == 0
+        # 切到最下方(甲声 -> 乙拿放声 -> 跳过标题 -> 丙声)
+        bar.switch_sound_down()
+        bar.switch_sound_down()
+        bar.switch_sound_down()
         assert bar.sound_combo.currentIndex() == total - 1
         assert received[-1] == ("", "", "丙声")
-        # 再向下循环回"全部"
+        # 已在最下方,再向下保持不变
         bar.switch_sound_down()
-        assert bar.sound_combo.currentIndex() == 0
+        assert bar.sound_combo.currentIndex() == total - 1
 
     def test_sound_switch_hotkeys(
         self, qapp: QApplication, store: DataStore, fake_keyboard: dict[str, Any]
@@ -198,6 +214,36 @@ class TestButtonBar:
         assert bar.sound_effect.source().isEmpty()
         fake_keyboard["hotkeys"]["right"]()
         assert not bar.sound_effect.source().isEmpty()
+
+    def test_arrow_keys_blocked_on_all_buttons(
+        self, qapp: QApplication, store: DataStore, fake_keyboard: dict[str, Any]
+    ) -> None:
+        """所有按钮上的四个方向键均被拦截,焦点切换不受快捷键影响。"""
+        from PySide6.QtCore import QEvent
+        from PySide6.QtGui import QKeyEvent
+
+        bar = ButtonBar(store)
+        dialog = bar.settings_dialog
+        buttons = [
+            bar.play_button,
+            bar.settings_button,
+            *dialog.hotkey_buttons.values(),
+            dialog.add_button,
+            dialog.remove_button,
+        ]
+        for button in buttons:
+            for key in (Qt.Key.Key_Up, Qt.Key.Key_Down, Qt.Key.Key_Left, Qt.Key.Key_Right):
+                event = QKeyEvent(QEvent.Type.KeyPress, key, Qt.KeyboardModifier.NoModifier)
+                assert bar.eventFilter(button, event) is True, (button.text(), key)
+
+    def test_play_button_triggers_play(
+        self, qapp: QApplication, store: DataStore, fake_keyboard: dict[str, Any]
+    ) -> None:
+        """工具栏播放按钮播放选中声音。"""
+        bar = ButtonBar(store)
+        bar.sound_combo.setCurrentIndex(1)  # 甲声
+        bar.play_button.click()
+        assert bar.sound_effect.source().toLocalFile().endswith("甲声_0.wav")
 
     def test_play_hotkey_skips_when_sound_is_all(
         self, qapp: QApplication, store: DataStore, fake_keyboard: dict[str, Any]
@@ -366,6 +412,32 @@ class TestContentArea:
         area = ContentArea(store)
         assert "color" in label_at(area.flow_layout, 0).styleSheet()
 
+    def test_playing_changed_forwards_is_playing(
+        self,
+        qapp: QApplication,
+        store: DataStore,
+        fake_keyboard: dict[str, Any],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """无参的播放变化通知按实际播放状态转发。"""
+        bar = ButtonBar(store)
+        received: list[bool] = []
+        bar.playing_changed.connect(received.append)
+        monkeypatch.setattr(bar.sound_effect, "isPlaying", lambda: True)
+        bar.sound_effect.playingChanged.emit()
+        monkeypatch.setattr(bar.sound_effect, "isPlaying", lambda: False)
+        bar.sound_effect.playingChanged.emit()
+        assert received == [True, False]
+
+    def test_play_state_display(self, qapp: QApplication, store: DataStore) -> None:
+        """播放状态标签默认等待播放,随信号切换为播放中。"""
+        area = ContentArea(store)
+        assert area.play_state_label.text() == "等待播放"
+        area.set_playing(True)
+        assert area.play_state_label.text() == "播放中"
+        area.set_playing(False)
+        assert area.play_state_label.text() == "等待播放"
+
     def test_no_match_clears_grid(self, qapp: QApplication, store: DataStore) -> None:
         area = ContentArea(store)
         area.refresh(category="工具", sound="乙拿放声")
@@ -387,6 +459,14 @@ class TestFlowLayout:
         assert widget.text() == "乙"
         assert layout.count() == 2
         assert layout.takeAt(9) is None
+
+    def test_height_available_before_widget_shown(self, qapp: QApplication) -> None:
+        """新建未显示的标签也能立即量出真实高度(修复快速切换时自适应偏小)。"""
+        container = QWidget()
+        layout = FlowLayout(container, spacing=8)
+        for text_label in ("某物品名", "另一件"):
+            layout.addWidget(QLabel(text_label))
+        assert layout.heightForWidth(60) > 0  # 容器未 show,布局项提示为 0
 
     def test_height_depends_on_width(self, qapp: QApplication) -> None:
         container = QWidget()
